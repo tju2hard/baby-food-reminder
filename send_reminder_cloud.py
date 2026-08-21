@@ -94,7 +94,13 @@ def format_message(porridge, pancake, lunch_meal, tomorrow):
 
     lines += ["🛒 明日备料清单："]
     lines += aggregate_ingredients([porridge, pancake, lunch_meal])
-    lines += ["", "— — — —"]
+    lines += [
+        "",
+        "🛒 打开可勾选清单：https://tju2hard.github.io/baby-food-reminder/list/",
+        "（若微信打不开，点右上角···→在浏览器中打开，或添加到主屏幕）",
+        "",
+        "— — — —",
+    ]
 
     lines += ["🍳 早上"]
     lines += _meal_block(porridge, "🥣 %s" % porridge["name"])
@@ -146,8 +152,6 @@ def main():
         message += "\n\n🥩 搭配自检：早/午/晚蛋白源 %s，当天三顿不重复" % "、".join(proteins)
     else:
         message += "\n\n🥩 搭配自检：今天蛋白源已覆盖（部分菜品无突出蛋白源）"
-
-    message += "\n\n🛒 打开可勾选清单：https://tju2hard.github.io/baby-food-reminder/list/\n（若微信打不开，点右上角···→在浏览器中打开，或添加到主屏幕）"
 
     servings = int(os.environ.get("SERVINGS", "1") or 1)
     babies = os.environ.get("BABIES", "").strip()
