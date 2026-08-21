@@ -67,9 +67,9 @@ def aggregate_ingredients(meals):
             merged[key] = merged.get(key, 0) + qty
     lines = []
     for (name, unit), qty in merged.items():
-        lines.append("  • %s %s%s" % (name, "%g" % qty, unit))
+        lines.append("  ☐ %s %s%s" % (name, "%g" % qty, unit))
     for s in special:
-        lines.append("  • %s" % s)
+        lines.append("  ☐ %s" % s)
     return lines
 
 
