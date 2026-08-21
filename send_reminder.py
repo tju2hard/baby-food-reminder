@@ -211,7 +211,7 @@ def main():
     else:
         message += "\n\n🥩 搭配自检：今天蛋白源已覆盖（部分菜品无突出蛋白源）"
 
-    message += "\n\n🛒 打开可勾选清单：https://tju2hard.github.io/baby-food-reminder/list/"
+    message += "\n\n🛒 打开可勾选清单：https://tju2hard.github.io/baby-food-reminder/list/\n（若微信打不开，点右上角···→在浏览器中打开，或添加到主屏幕）"
 
     servings = int(config.get("servings", 1) or 1)
     babies = config.get("babies") or []
