@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>宝宝辅食 · 今日备料清单</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #fdf6ec;
+    color: #4a3b2a;
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    line-height: 1.6;
+  }
+  h1 {
+    font-size: 20px;
+    text-align: center;
+    color: #c96f4a;
+    margin-bottom: 4px;
+  }
+  .date {
+    text-align: center;
+    color: #a08a6f;
+    font-size: 14px;
+    margin-bottom: 18px;
+  }
+  .meal-block {
+    background: #fff;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  .meal-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #c96f4a;
+    margin-bottom: 8px;
+  }
+  .meal-title .tag {
+    font-size: 12px;
+    background: #f4e3d5;
+    color: #b06a4a;
+    border-radius: 6px;
+    padding: 2px 6px;
+    margin-left: 6px;
+    font-weight: normal;
+  }
+  .ingredient {
+    display: flex;
+    align-items: center;
+    padding: 7px 4px;
+    border-radius: 8px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .ingredient:hover { background: #faf1e6; }
+  .ingredient input[type="checkbox"] {
+    width: 20px; height: 20px;
+    accent-color: #c96f4a;
+    margin-right: 10px;
+    flex-shrink: 0;
+  }
+  .ingredient .name {
+    flex: 1;
+    font-size: 15px;
+  }
+  .ingredient.checked .name {
+    text-decoration: line-through;
+    color: #b8a893;
+  }
+  .bought-bar {
+    position: sticky;
+    top: 8px;
+    background: #fff;
+    border: 1px solid #f0e0cf;
+    border-radius: 20px;
+    padding: 8px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: #a08a6f;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+  .bought-bar b { color: #c96f4a; }
+  .reset {
+    text-align: center;
+    margin-top: 16px;
+  }
+  .reset button {
+    border: none;
+    background: transparent;
+    color: #b8a893;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .footer {
+    text-align: center;
+    font-size: 12px;
+    color: #c9b8a3;
+    margin-top: 24px;
+  }
+  .load-err {
+    text-align: center;
+    color: #c96f4a;
+    padding: 40px 20px;
+  }
+</style>
+</head>
+<body>
+
+<h1>🍚 宝宝辅食备料清单</h1>
+<div class="date" id="dateLine"></div>
+
+<div class="bought-bar" id="boughtBar">已买 <b id="boughtCount">0</b> / <b id="totalCount">0</b></div>
+
+<div id="content">
+  <div class="load-err">加载中…</div>
+</div>
+
+<div class="reset"><button id="resetBtn">重新勾选（清空今天的勾选）</button></div>
+<div class="footer">买一样，点一下 ✓ · 状态自动保存</div>
+
+<script>
+// ===== 与 send_reminder 相同的轮换逻辑 =====
+const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+function pickBalanced(meals, startDate, tomorrow, used) {
+  const n = meals.length;
+  const delta = Math.floor((tomorrow - startDate) / 86400000);
+  if (delta < 0) return null;
+  for (let i = 0; i < n; i++) {
+    const meal = meals[(delta + i) % n];
+    const p = meal.protein || "";
+    if (p && used.has(p)) continue;
+    return meal;
+  }
+  return meals[delta % n];
+}
+
+// 北京时间（服务器时区可能不是北京，用偏移计算）
+function beijingToday() {
+  const now = new Date();
+  const bj = new Date(now.getTime() + (8 - now.getTimezoneOffset() / 60) * 3600000);
+  return new Date(bj.getFullYear(), bj.getMonth(), bj.getDate());
+}
+
+function fmtDate(d) {
+  return d.getMonth() + 1 + "月" + d.getDate() + "日 " + WEEK[d.getDay()];
+}
+
+function render() {
+  const today = beijingToday();
+  const tomorrow = new Date(today.getTime() + 86400000);
+  document.getElementById("dateLine").textContent = "明日 · " + fmtDate(tomorrow);
+
+  fetch("menu.json").then(r => r.json()).then(menu => {
+    const startDate = new Date(menu.start_date + "T00:00:00");
+    const used = new Set();
+    const porridge = pickBalanced(menu.breakfast_porridge, startDate, tomorrow, used);
+    if (porridge) used.add(porridge.protein || "");
+    const pancake = pickBalanced(menu.breakfast_pancake, startDate, tomorrow, used);
+    if (pancake) used.add(pancake.protein || "");
+    const lunch = pickBalanced(menu.lunch, startDate, tomorrow, used);
+
+    if (!porridge || !pancake || !lunch) {
+      document.getElementById("content").innerHTML =
+        '<div class="load-err">菜单还没到开餐日</div>';
+      return;
+    }
+
+    const groups = [
+      { title: "🍳 早上 · " + porridge.name, tag: "粥/疙瘩汤", meals: [porridge] },
+      { title: "🥞 早上配 · " + pancake.name, tag: "小饼", meals: [pancake] },
+      { title: "🍜 下午 · " + lunch.name, tag: "面条", meals: [lunch] },
+    ];
+
+    // 汇总食材
+    const merged = {};
+    const special = [];
+    for (const g of groups) {
+      for (const meal of g.meals) {
+        for (const item of meal.ingredients) {
+          const m = item.trim().match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:([a-zA-Zgml]+|个|只|片|棵|块|根|朵|勺|瓣))?$/);
+          if (m) {
+            const key = m[1].trim() + "|" + (m[3] || "");
+            const qty = parseFloat(m[2]);
+            merged[key] = { name: m[1].trim(), unit: m[3] || "", qty: (merged[key]?.qty || 0) + qty };
+          } else {
+            special.push(item);
+          }
+        }
+      }
+    }
+
+    // 渲染
+    const keyStr = tomorrow.getFullYear() + "-" + (tomorrow.getMonth()+1) + "-" + tomorrow.getDate();
+    const STORE_KEY = "babyfood-" + keyStr;
+    let checked = {};
+    try { checked = JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch(e) {}
+
+    const content = document.getElementById("content");
+    content.innerHTML = "";
+
+    for (const g of groups) {
+      const block = document.createElement("div");
+      block.className = "meal-block";
+      block.innerHTML = '<div class="meal-title">' + g.title + '</div>';
+      for (const meal of g.meals) {
+        for (const item of meal.ingredients) {
+          const m = item.trim().match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:([a-zA-Zgml]+|个|只|片|棵|块|根|朵|勺|瓣))?$/);
+          const label = m ? (m[1].trim() + " " + (m[3] || "") + m[2]) : item;
+          const row = document.createElement("label");
+          row.className = "ingredient" + (checked[item] ? " checked" : "");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = !!checked[item];
+          cb.addEventListener("change", function() {
+            checked[item] = cb.checked;
+            row.classList.toggle("checked", cb.checked);
+            localStorage.setItem(STORE_KEY, JSON.stringify(checked));
+            updateBought();
+          });
+          row.appendChild(cb);
+          const span = document.createElement("span");
+          span.className = "name";
+          span.textContent = label;
+          row.appendChild(span);
+          block.appendChild(row);
+        }
+      }
+      content.appendChild(block);
+    }
+
+    function updateBought() {
+      const boxes = content.querySelectorAll('input[type="checkbox"]');
+      const total = boxes.length;
+      const bought = Array.from(boxes).filter(b => b.checked).length;
+      document.getElementById("boughtCount").textContent = bought;
+      document.getElementById("totalCount").textContent = total;
+    }
+    updateBought();
+
+    document.getElementById("resetBtn").onclick = function() {
+      if (confirm("确定清空今天的勾选吗？")) {
+        localStorage.removeItem(STORE_KEY);
+        location.reload();
+      }
+    };
+  }).catch(function() {
+    document.getElementById("content").innerHTML =
+      '<div class="load-err">菜单加载失败，请稍后刷新重试</div>';
+  });
+}
+
+render();
+</script>
+</body>
+</html>
