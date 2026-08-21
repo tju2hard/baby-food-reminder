@@ -159,7 +159,7 @@ function render() {
   const tomorrow = new Date(today.getTime() + 86400000);
   document.getElementById("dateLine").textContent = "明日 · " + fmtDate(tomorrow);
 
-  fetch("menu.json").then(r => r.json()).then(menu => {
+  fetch("../menu.json").then(r => r.json()).then(menu => {
     const startDate = new Date(menu.start_date + "T00:00:00");
     const used = new Set();
     const porridge = pickBalanced(menu.breakfast_porridge, startDate, tomorrow, used);
