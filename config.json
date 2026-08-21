@@ -1,11 +1,7 @@
 {
   "_comment": "发送通道：webhook_url 优先（企业微信群机器人）；留空则用 sendkeys 列表（Server酱批量推送到多个微信）。新增家人时在 sendkeys 里加一行。servings=宝宝人数，babies=宝宝昵称，用于消息里标注双份量。",
   "webhook_url": "",
-  "sendkeys": [
-    "SCT402341TwxDyf2yR8m53tAqHuPM7xTEv",
-    "SCT402352TI65n3LDJYuMYG9ToIOe4rrnm",
-    "SCT402353TQ2cgMI4CggHt8tYWHGUf7aVU"
-  ],
+  "sendkeys": [],
   "servings": 2,
   "babies": ["加加", "玥玥"]
 }
