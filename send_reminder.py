@@ -8,6 +8,7 @@
 
 import json
 import os
+import re
 import sys
 import urllib.parse
 from datetime import date, timedelta
@@ -65,6 +66,39 @@ def mark_sent(day):
     return True
 
 
+def _parse_ingredient(item):
+    """解析单个食材为 (名称, 数量, 单位)。非标准格式（适量/少许/分数等）返回 None。"""
+    item = item.strip()
+    m = re.match(
+        r"^(.+?)\s+(\d+(?:\.\d+)?)\s*([a-zA-Zgml]+|个|只|片|棵|块|根|朵|勺|瓣)?$",
+        item,
+    )
+    if m:
+        return m.group(1).strip(), float(m.group(2)), (m.group(3) or "").strip()
+    return None
+
+
+def aggregate_ingredients(meals):
+    """汇总多餐食材：同名称同单位自动累加数量；特殊量(适量/分数等)原样列出。"""
+    merged = {}
+    special = []
+    for meal in meals:
+        for item in meal.get("ingredients", []):
+            parsed = _parse_ingredient(item)
+            if parsed is None:
+                special.append(item)
+                continue
+            name, qty, unit = parsed
+            key = (name, unit)
+            merged[key] = merged.get(key, 0) + qty
+    lines = []
+    for (name, unit), qty in merged.items():
+        lines.append("  • %s %s%s" % (name, "%g" % qty, unit))
+    for s in special:
+        lines.append("  • %s" % s)
+    return lines
+
+
 def _meal_block(meal, title):
     """生成一餐的文本块，title 形如 '🥣 南瓜小米粥'。"""
     lines = [title, "🥕 食材："]
@@ -84,6 +118,10 @@ def _meal_block(meal, title):
 def format_message(porridge, pancake, lunch_meal, tomorrow):
     date_str = f"{tomorrow.month}月{tomorrow.day}日 {WEEKDAYS[tomorrow.weekday()]}"
     lines = ["🍚 明日辅食提醒（%s）" % date_str, ""]
+
+    lines += ["🛒 明日备料清单："]
+    lines += aggregate_ingredients([porridge, pancake, lunch_meal])
+    lines += ["", "— — — —"]
 
     lines += ["🍳 早上"]
     lines += _meal_block(porridge, "🥣 %s" % porridge["name"])
