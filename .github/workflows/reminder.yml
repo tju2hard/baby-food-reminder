@@ -1,0 +1,21 @@
+name: 辅食提醒
+
+on:
+  schedule:
+    # 每天 14:00 北京时间（06:00 UTC），用 cron 表达式
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # 支持手动触发测试
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 运行辅食提醒
+        env:
+          WEIXIN_SENDKEYS: ${{ secrets.WEIXIN_SENDKEYS }}
+          SERVINGS: '2'
+          BABIES: '加加、玥玥'
+        run: python3 send_reminder_cloud.py
