@@ -150,7 +150,7 @@ async function run(env) {
   if (!porridge || !pancake || !lunch) return { ok: false, msg: "菜单不完整" };
 
   const message = buildMessage(porridge, pancake, lunch, tomorrow);
-  const title = "明日辅食提醒 · " + tomorrow.getUTCMonth() + 1 + "月" + tomorrow.getUTCDate() + "日";
+  const title = "明日辅食提醒 · " + fmtDate(tomorrow).ym;
 
   const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
   if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS" };

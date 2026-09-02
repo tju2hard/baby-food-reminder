@@ -143,15 +143,15 @@ function pickBalanced(meals, startDate, tomorrow, used) {
   return meals[delta % n];
 }
 
-// 北京时间（服务器时区可能不是北京，用偏移计算）
+// 北京时间：统一用 UTC+8 偏移算，不受设备时区影响
+// 返回"北京当天0点"对应的 UTC 零点日期，后续一律用 getUTC* 读取
 function beijingToday() {
-  const now = new Date();
-  const bj = new Date(now.getTime() + (8 - now.getTimezoneOffset() / 60) * 3600000);
-  return new Date(bj.getFullYear(), bj.getMonth(), bj.getDate());
+  const bj = new Date(Date.now() + 8 * 3600000); // 北京此刻
+  return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate()));
 }
 
 function fmtDate(d) {
-  return d.getMonth() + 1 + "月" + d.getDate() + "日 " + WEEK[d.getDay()];
+  return (d.getUTCMonth() + 1) + "月" + d.getUTCDate() + "日 " + WEEK[d.getUTCDay()];
 }
 
 function render() {
@@ -160,7 +160,8 @@ function render() {
   document.getElementById("dateLine").textContent = "明日 · " + fmtDate(tomorrow);
 
   fetch("../menu.json").then(r => r.json()).then(menu => {
-    const startDate = new Date(menu.start_date + "T00:00:00");
+    const parts = menu.start_date.split("-");
+    const startDate = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
     const used = new Set();
     const porridge = pickBalanced(menu.breakfast_porridge, startDate, tomorrow, used);
     if (porridge) used.add(porridge.protein || "");
@@ -199,7 +200,7 @@ function render() {
     }
 
     // 渲染
-    const keyStr = tomorrow.getFullYear() + "-" + (tomorrow.getMonth()+1) + "-" + tomorrow.getDate();
+    const keyStr = tomorrow.getUTCFullYear() + "-" + (tomorrow.getUTCMonth()+1) + "-" + tomorrow.getUTCDate();
     const STORE_KEY = "babyfood-" + keyStr;
     let checked = {};
     try { checked = JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch(e) {}
