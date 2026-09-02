@@ -1,10 +1,7 @@
 name: 辅食提醒
 
 on:
-  schedule:
-    # 每天 14:00 北京时间（06:00 UTC），用 cron 表达式
-    - cron: '0 6 * * *'
-  workflow_dispatch:  # 支持手动触发测试
+  workflow_dispatch:  # 仅手动触发（Cloudflare Worker 已接管每日准点定时）
 
 jobs:
   remind:
