@@ -2,3 +2,4 @@
 state.json
 reminder.log
 .cf/
+.wrangler/

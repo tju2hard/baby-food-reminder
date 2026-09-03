@@ -5,22 +5,33 @@
 // 运行在 Cloudflare 边缘（非大陆网络），可访问境外新闻源。
 //
 // 部署后手动触发测试：带 Authorization: Bearer <TRIGGER_TOKEN> 请求 GET /run_epidemic
-// 病种范围：流感/甲流/乙流、新冠、支原体/RSV/腺病毒、诺如、其他儿科传染病
+// 病种范围：官方通报、流感/甲流/乙流、新冠、支原体/RSV/腺病毒、诺如、其他儿科传染病
 //
 // ⚠️ 免责：这是新闻自动检索的"尽力而为"预警，非官方疫情通报。
 //    权威信息请以北京卫健委 / 中国疾控官方渠道为准。
 // ============================================================
 
 const CITY = "北京";
+const OFFICIAL_REPORTS_URL = "https://jkj.beijing.gov.cn/zwgk/zfxxgk/fdzdgknr/crbxx/";
 
 // 每个病种组独立检索，避免关键词互相稀释
 const DISEASE_GROUPS = [
+  { key: "官方通报", q: "法定传染病 OR 传染病报告 OR 疾病监测" },
   { key: "流感",   q: "流感 OR 甲流 OR 乙流" },
   { key: "新冠",   q: "新冠 OR 奥密克戎 OR 新冠病毒" },
   { key: "支原体RSV", q: "支原体 OR 呼吸道合胞 OR RSV OR 腺病毒" },
   { key: "诺如",   q: "诺如" },
   { key: "其他儿科", q: "手足口 OR 百日咳 OR 猩红热 OR 水痘 OR 流感样病例" },
 ];
+
+const HISTORICAL_BACKFILL = {
+  key: "backfill:2026-08",
+  label: "2026年8月",
+  after: "2026-08-01",
+  before: "2026-09-01",
+  startMs: Date.parse("2026-08-01T00:00:00+08:00"),
+  endMs: Date.parse("2026-09-01T00:00:00+08:00"),
+};
 
 // 回看 24 小时可以容忍新闻源延迟收录，已发送链接由 KV 过滤。
 const LOOKBACK_HOURS = 24;
@@ -69,9 +80,13 @@ function parseRss(xml) {
   return items;
 }
 
-// 按病种组查新闻：先 Google News，失败退 Bing
-async function fetchGroupNews(city, group) {
-  const query = encodeURIComponent(city + " " + group.q);
+// 按病种组查新闻：先 Google News，失败退 Bing。
+// 传入 after/before 时使用新闻搜索的日期语法，并在本地再次严格校验发布时间。
+async function fetchGroupNews(city, group, range = {}) {
+  const dateQuery = range.after && range.before
+    ? ` after:${range.after} before:${range.before}`
+    : "";
+  const query = encodeURIComponent(`${city} (${group.q})${dateQuery}`);
   const googleUrl = `https://news.google.com/rss/search?q=${query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
   const bingUrl = `https://www.bing.com/news/search?q=${query}&format=rss`;
 
@@ -80,9 +95,10 @@ async function fetchGroupNews(city, group) {
   if (!xml) return { items: [], sourceOk: false };
   const items = parseRss(xml);
 
-  const cutoff = Date.now() - LOOKBACK_HOURS * 3600000;
+  const startMs = range.startMs ?? Date.now() - LOOKBACK_HOURS * 3600000;
+  const endMs = range.endMs ?? Date.now();
   const fresh = items
-    .filter(i => i.pubDate && i.pubDate >= cutoff)
+    .filter(i => i.pubDate && i.pubDate >= startMs && i.pubDate < endMs)
     .map(i => ({ ...i, group: group.key }));
 
   // 同一病种组内去标题重复
@@ -95,6 +111,34 @@ async function fetchGroupNews(city, group) {
     deduped.push(it);
   }
   return { items: deduped, sourceOk: true };
+}
+
+// 北京市疾病预防控制局的传染病信息列表是首选官方源，不依赖新闻聚合收录。
+async function fetchOfficialReports(range = {}) {
+  const html = await fetchText(OFFICIAL_REPORTS_URL);
+  if (!html) return { items: [], sourceOk: false };
+
+  const startMs = range.startMs ?? Date.now() - LOOKBACK_HOURS * 3600000;
+  const endMs = range.endMs ?? Date.now();
+  const items = [];
+  const liRe = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+  let match;
+  while ((match = liRe.exec(html)) !== null) {
+    const block = match[1];
+    const hrefM = block.match(/<a\b[^>]*href=["']([^"']+)["'][^>]*>/i);
+    const titleM = block.match(/<a\b[^>]*title=["']([^"']+)["'][^>]*>/i);
+    const dateM = block.match(/<span[^>]*>\s*(\d{4}-\d{2}-\d{2})\s*<\/span>/i);
+    if (!hrefM || !titleM || !dateM) continue;
+    const pubDate = Date.parse(dateM[1] + "T00:00:00+08:00");
+    if (!Number.isFinite(pubDate) || pubDate < startMs || pubDate >= endMs) continue;
+    items.push({
+      title: stripHtml(titleM[1]),
+      link: new URL(hrefM[1], OFFICIAL_REPORTS_URL).href,
+      pubDate,
+      group: "官方通报",
+    });
+  }
+  return { items, sourceOk: true };
 }
 
 async function seenKey(link) {
@@ -156,6 +200,112 @@ async function runSimulation(env) {
   };
 }
 
+function uniqueItems(items) {
+  const unique = [];
+  const seenLinks = new Set();
+  const seenTitles = new Set();
+  for (const item of items) {
+    const titleKey = item.title.replace(/\s+/g, "").toLowerCase();
+    if (seenLinks.has(item.link) || seenTitles.has(titleKey)) continue;
+    seenLinks.add(item.link);
+    seenTitles.add(titleKey);
+    unique.push(item);
+  }
+  return unique;
+}
+
+async function sendToAll(keys, title, desp, failureLabel = "发送失败") {
+  let okCount = 0;
+  for (const key of keys) {
+    try { await sendServerChan(key, title, desp); okCount++; }
+    catch (e) { console.log(failureLabel + ":", key.slice(0, 8), e.message); }
+  }
+  return okCount;
+}
+
+async function runHistoricalBackfill(env) {
+  const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS", historical: true };
+  if (!env.NEWS_STATE) return { ok: false, msg: "未绑定 NEWS_STATE KV，无法安全去重", historical: true };
+
+  const all = [];
+  let availableGroups = 0;
+  for (const group of DISEASE_GROUPS) {
+    try {
+      const result = await fetchGroupNews(CITY, group, HISTORICAL_BACKFILL);
+      if (result.sourceOk) availableGroups++;
+      all.push(...result.items);
+    } catch (e) { /* 单组失败跳过 */ }
+  }
+  try {
+    const official = await fetchOfficialReports(HISTORICAL_BACKFILL);
+    if (official.sourceOk) availableGroups++;
+    all.push(...official.items);
+  } catch (e) { /* 官方源失败时继续使用聚合源 */ }
+
+  if (!availableGroups) {
+    return { ok: false, msg: "历史回测时所有新闻源均不可用", sent: false, historical: true, availableGroups };
+  }
+  if (!all.length) {
+    return {
+      ok: true,
+      msg: `${HISTORICAL_BACKFILL.label}历史搜索无结果，未推送`,
+      sent: false,
+      historical: true,
+      availableGroups,
+      hits: 0,
+    };
+  }
+
+  all.sort((a, b) => b.pubDate - a.pubDate);
+  const unique = uniqueItems(all);
+  const topEntries = (await filterUnseen(unique, env.NEWS_STATE)).slice(0, MAX_HITS);
+  if (!topEntries.length) {
+    return {
+      ok: true,
+      msg: `${HISTORICAL_BACKFILL.label}历史结果均已推送`,
+      sent: false,
+      historical: true,
+      availableGroups,
+      hits: 0,
+    };
+  }
+
+  const lines = [
+    `🧪 ${HISTORICAL_BACKFILL.label}疾病信息历史回测`,
+    "",
+    "⚠️ 这是历史回测，不是当前疫情提醒，请勿按实时消息转发。",
+    "以下内容由系统从真实新闻源自动检索，用于验证捕捉、去重和推送链路：",
+    "",
+  ];
+  for (const entry of topEntries) {
+    const it = entry.item;
+    const bj = new Date(it.pubDate + 8 * 3600000);
+    const date = bj.getUTCFullYear() + "-" + String(bj.getUTCMonth() + 1).padStart(2, "0") + "-" + String(bj.getUTCDate()).padStart(2, "0");
+    lines.push(`【${it.group}】${it.title}`);
+    lines.push(`  ${date} · ${it.link}`);
+  }
+  lines.push("");
+  lines.push("—— 历史新闻自动检索结果不等于疫情暴发结论，权威口径以官方公告为准");
+
+  const okCount = await sendToAll(
+    keys,
+    `🧪 ${HISTORICAL_BACKFILL.label}疾病信息历史回测`,
+    lines.join("\n"),
+    "历史回测发送失败",
+  );
+  const ok = okCount === keys.length;
+  if (ok) await markSeen(topEntries, env.NEWS_STATE);
+  return {
+    ok,
+    msg: `历史回测推送 ${okCount}/${keys.length}`,
+    sent: okCount > 0,
+    historical: true,
+    hits: topEntries.length,
+    availableGroups,
+  };
+}
+
 async function run(env) {
   const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
   if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS" };
@@ -171,19 +321,18 @@ async function run(env) {
       all.push(...result.items);
     } catch (e) { /* 单组失败跳过 */ }
   }
+  try {
+    const official = await fetchOfficialReports();
+    if (official.sourceOk) availableGroups++;
+    all.push(...official.items);
+  } catch (e) { /* 官方源失败时继续使用聚合源 */ }
 
   if (!availableGroups) return { ok: false, msg: "所有新闻源均不可用", sent: false, availableGroups };
   if (!all.length) return { ok: true, msg: `近${LOOKBACK_HOURS}h 无北京疫情相关新闻，未推送`, sent: false, availableGroups };
 
   // 汇总排序，取前 N
   all.sort((a, b) => b.pubDate - a.pubDate);
-  const unique = [];
-  const seenLinks = new Set();
-  for (const item of all) {
-    if (seenLinks.has(item.link)) continue;
-    seenLinks.add(item.link);
-    unique.push(item);
-  }
+  const unique = uniqueItems(all);
   const unseen = await filterUnseen(unique, env.NEWS_STATE);
   if (!unseen.length) return { ok: true, msg: "没有新发现的北京疫情相关新闻，未推送", sent: false, availableGroups };
   const topEntries = unseen.slice(0, MAX_HITS);
@@ -219,17 +368,28 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       const simulationPending = env.NEWS_STATE && await env.NEWS_STATE.get("simulation:pending");
-      const r = simulationPending ? await runSimulation(env) : await run(env);
-      console.log(simulationPending ? "[simulation]" : "[cron-epidemic]", JSON.stringify(r));
+      const backfillPending = !simulationPending && env.NEWS_STATE && await env.NEWS_STATE.get(HISTORICAL_BACKFILL.key);
+      const type = simulationPending ? "simulation" : backfillPending ? "backfill" : "scan";
+      const r = simulationPending
+        ? await runSimulation(env)
+        : backfillPending
+          ? await runHistoricalBackfill(env)
+          : await run(env);
+      console.log(`[${type}]`, JSON.stringify(r));
       if (env.NEWS_STATE) {
-        await env.NEWS_STATE.put("status:last_run", JSON.stringify({
+        const status = JSON.stringify({
           ...r,
-          type: simulationPending ? "simulation" : "scan",
+          type,
           at: new Date().toISOString(),
-        }), { expirationTtl: 7 * 24 * 3600 });
+        });
+        await env.NEWS_STATE.put("status:last_run", status, { expirationTtl: 7 * 24 * 3600 });
+        if (type === "backfill") {
+          await env.NEWS_STATE.put("status:last_backfill", status, { expirationTtl: 30 * 24 * 3600 });
+        }
       }
       if (!r.ok) throw new Error(r.msg);
       if (simulationPending) await env.NEWS_STATE.delete("simulation:pending");
+      if (backfillPending) await env.NEWS_STATE.delete(HISTORICAL_BACKFILL.key);
     })());
   },
   async fetch(request, env) {
