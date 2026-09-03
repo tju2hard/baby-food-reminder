@@ -82,7 +82,28 @@ const newsState = {
   async put(key, value) {
     stateValues.set(key, value);
   },
+  async delete(key) {
+    stateValues.delete(key);
+  },
 };
+
+stateValues.set("simulation:pending", "1");
+let scheduledPromise;
+const beforeSimulationSend = sendCount;
+await epidemic.scheduled({}, {
+  WEIXIN_SENDKEYS: "key",
+  NEWS_STATE: newsState,
+}, {
+  waitUntil(promise) {
+    scheduledPromise = promise;
+  },
+});
+await scheduledPromise;
+assert.equal(sendCount, beforeSimulationSend + 1);
+assert.equal(stateValues.has("simulation:pending"), false);
+assert.match(new URLSearchParams(sentBody).get("title"), /模拟/);
+assert.match(new URLSearchParams(sentBody).get("desp"), /并非真实疫情/);
+
 newsMode = true;
 const beforeNewsSend = sendCount;
 const epidemicFirst = await epidemic.fetch(new Request("https://example.test/run_epidemic", {

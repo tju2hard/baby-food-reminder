@@ -126,6 +126,34 @@ async function sendServerChan(sendkey, title, desp) {
   if (json.code !== 0) throw new Error("发送失败: " + JSON.stringify(json));
 }
 
+async function runSimulation(env) {
+  const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS", simulated: true };
+
+  const title = "🧪 疾病提醒链路演练（模拟）";
+  const desp = [
+    "⚠️ 这是系统模拟演练，并非真实疫情，请勿转发或恐慌。",
+    "",
+    "【模拟场景】假设系统刚捕捉到一条北京地区的儿童呼吸道疾病相关新闻。",
+    "系统已立即完成：新闻识别 → 新旧去重 → 云端推送 → 微信提醒。",
+    "",
+    "✅ 如果你看到本消息，说明疾病即时提醒链路运行正常。",
+    "—— 宝宝健康提醒系统",
+  ].join("\n");
+
+  let okCount = 0;
+  for (const key of keys) {
+    try { await sendServerChan(key, title, desp); okCount++; }
+    catch (e) { console.log("演练发送失败:", key.slice(0, 8), e.message); }
+  }
+  return {
+    ok: okCount === keys.length,
+    msg: `演练推送 ${okCount}/${keys.length}`,
+    sent: okCount > 0,
+    simulated: true,
+  };
+}
+
 async function run(env) {
   const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
   if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS" };
@@ -184,10 +212,13 @@ async function run(env) {
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(run(env).then(r => {
-      console.log("[cron-epidemic]", JSON.stringify(r));
+    ctx.waitUntil((async () => {
+      const simulationPending = env.NEWS_STATE && await env.NEWS_STATE.get("simulation:pending");
+      const r = simulationPending ? await runSimulation(env) : await run(env);
+      console.log(simulationPending ? "[simulation]" : "[cron-epidemic]", JSON.stringify(r));
       if (!r.ok) throw new Error(r.msg);
-    }));
+      if (simulationPending) await env.NEWS_STATE.delete("simulation:pending");
+    })());
   },
   async fetch(request, env) {
     const url = new URL(request.url);
