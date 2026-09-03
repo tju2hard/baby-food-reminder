@@ -1,10 +1,10 @@
 // ============================================================
 // 北京疫情动态提醒 —— Cloudflare Worker（独立，与辅食提醒分开）
-// 定时检索「北京 + 病种」的最新新闻（Google News / Bing 新闻兜底），
-// 只在抓到【过去几小时内新出现】的相关新闻时，推送到微信。
+// 每 5 分钟检索「北京 + 病种」的最新新闻（Google News / Bing 新闻兜底），
+// 新链接一经发现就推送；NEWS_STATE KV 负责持久去重。
 // 运行在 Cloudflare 边缘（非大陆网络），可访问境外新闻源。
 //
-// 部署后手动触发测试：GET /run_epidemic
+// 部署后手动触发测试：带 Authorization: Bearer <TRIGGER_TOKEN> 请求 GET /run_epidemic
 // 病种范围：流感/甲流/乙流、新冠、支原体/RSV/腺病毒、诺如、其他儿科传染病
 //
 // ⚠️ 免责：这是新闻自动检索的"尽力而为"预警，非官方疫情通报。
@@ -22,8 +22,9 @@ const DISEASE_GROUPS = [
   { key: "其他儿科", q: "手足口 OR 百日咳 OR 猩红热 OR 水痘 OR 流感样病例" },
 ];
 
-// 检索间隔(小时)：cron 每 8h 一次 → 只报最近 ~6h 的新条目，去重靠时间窗
-const LOOKBACK_HOURS = 6;
+// 回看 24 小时可以容忍新闻源延迟收录，已发送链接由 KV 过滤。
+const LOOKBACK_HOURS = 24;
+const SEEN_TTL_SECONDS = 14 * 24 * 3600;
 // 单次最多报几条
 const MAX_HITS = 6;
 
@@ -94,6 +95,25 @@ async function fetchGroupNews(city, group) {
   return deduped;
 }
 
+async function seenKey(link) {
+  const bytes = new TextEncoder().encode(link);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+  return "news:" + hex;
+}
+
+async function filterUnseen(items, state) {
+  const keyed = await Promise.all(items.map(async item => ({ item, key: await seenKey(item.link) })));
+  const values = await Promise.all(keyed.map(entry => state.get(entry.key)));
+  return keyed.filter((entry, index) => values[index] === null);
+}
+
+async function markSeen(entries, state) {
+  await Promise.all(entries.map(entry => state.put(entry.key, String(Date.now()), {
+    expirationTtl: SEEN_TTL_SECONDS,
+  })));
+}
+
 async function sendServerChan(sendkey, title, desp) {
   const body = new URLSearchParams({ title, desp, tags: "疫情提醒" });
   const resp = await fetch("https://sctapi.ftqq.com/" + sendkey + ".send", {
@@ -101,6 +121,7 @@ async function sendServerChan(sendkey, title, desp) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
   const json = await resp.json();
   if (json.code !== 0) throw new Error("发送失败: " + JSON.stringify(json));
 }
@@ -108,6 +129,7 @@ async function sendServerChan(sendkey, title, desp) {
 async function run(env) {
   const keys = (env.WEIXIN_SENDKEYS || "").split(",").map(s => s.trim()).filter(Boolean);
   if (!keys.length) return { ok: false, msg: "未配置 WEIXIN_SENDKEYS" };
+  if (!env.NEWS_STATE) return { ok: false, msg: "未绑定 NEWS_STATE KV，无法安全去重" };
 
   // 逐组检索
   const all = [];
@@ -118,11 +140,21 @@ async function run(env) {
     } catch (e) { /* 单组失败跳过 */ }
   }
 
-  if (!all.length) return { ok: true, msg: `近${LOOKBACK_HOURS}h 无北京疫情相关新新闻，未推送`, sent: false };
+  if (!all.length) return { ok: true, msg: `近${LOOKBACK_HOURS}h 无北京疫情相关新闻，未推送`, sent: false };
 
   // 汇总排序，取前 N
   all.sort((a, b) => b.pubDate - a.pubDate);
-  const top = all.slice(0, MAX_HITS);
+  const unique = [];
+  const seenLinks = new Set();
+  for (const item of all) {
+    if (seenLinks.has(item.link)) continue;
+    seenLinks.add(item.link);
+    unique.push(item);
+  }
+  const unseen = await filterUnseen(unique, env.NEWS_STATE);
+  if (!unseen.length) return { ok: true, msg: "没有新发现的北京疫情相关新闻，未推送", sent: false };
+  const topEntries = unseen.slice(0, MAX_HITS);
+  const top = topEntries.map(entry => entry.item);
 
   const now = beijingTimeStr();
   const lines = ["🦠 北京疫情动态提醒（" + now + "）", ""];
@@ -145,23 +177,36 @@ async function run(env) {
     try { await sendServerChan(key, title, desp); okCount++; }
     catch (e) { console.log("发送失败:", key.slice(0, 8), e.message); }
   }
-  return { ok: okCount > 0, msg: `推送 ${okCount}/${keys.length}`, sent: okCount > 0, hits: top.length };
+  const ok = okCount === keys.length;
+  if (ok) await markSeen(topEntries, env.NEWS_STATE);
+  return { ok, msg: `推送 ${okCount}/${keys.length}`, sent: okCount > 0, hits: top.length };
 }
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(run(env).then(r => console.log("[cron-epidemic]", JSON.stringify(r))));
+    ctx.waitUntil(run(env).then(r => {
+      console.log("[cron-epidemic]", JSON.stringify(r));
+      if (!r.ok) throw new Error(r.msg);
+    }));
   },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/run_epidemic") {
+      const expected = env.TRIGGER_TOKEN || "";
+      const supplied = request.headers.get("Authorization") || "";
+      if (!expected) {
+        return new Response(JSON.stringify({ ok: false, msg: "未配置 TRIGGER_TOKEN，手动触发已禁用" }), { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      if (supplied !== "Bearer " + expected) {
+        return new Response(JSON.stringify({ ok: false, msg: "未授权" }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
       try {
         const r = await run(env);
-        return new Response(JSON.stringify(r), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify(r), { status: r.ok ? 200 : 500, headers: { "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ ok: false, msg: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
     }
-    return new Response("北京疫情提醒 Worker 运行中。GET /run_epidemic 手动触发。", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return new Response("北京疫情提醒 Worker 运行中。带 Bearer Token 请求 GET /run_epidemic 可手动触发。", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   },
 };

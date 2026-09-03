@@ -1,0 +1,14 @@
+name = "beijing-epidemic"
+main = "epidemic_worker.js"
+compatibility_date = "2026-01-01"
+
+# 每 5 分钟检查一次；只有发现 KV 中不存在的新链接才发送。
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[kv_namespaces]]
+binding = "NEWS_STATE"
+id = "79de375cec6b434b9aee10448f71e131"
+
+[observability]
+enabled = true

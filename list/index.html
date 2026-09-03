@@ -49,6 +49,11 @@
     margin-left: 6px;
     font-weight: normal;
   }
+  .menu-line {
+    font-size: 14px;
+    padding: 3px 4px;
+    color: #6c5843;
+  }
   .ingredient {
     display: flex;
     align-items: center;
@@ -131,6 +136,7 @@
 const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
 function pickBalanced(meals, startDate, tomorrow, used) {
+  if (!Array.isArray(meals) || meals.length === 0) return null;
   const n = meals.length;
   const delta = Math.floor((tomorrow - startDate) / 86400000);
   if (delta < 0) return null;
@@ -208,35 +214,55 @@ function render() {
     const content = document.getElementById("content");
     content.innerHTML = "";
 
+    const menuBlock = document.createElement("div");
+    menuBlock.className = "meal-block";
+    const menuTitle = document.createElement("div");
+    menuTitle.className = "meal-title";
+    menuTitle.textContent = "🍽️ 明日菜单";
+    menuBlock.appendChild(menuTitle);
     for (const g of groups) {
-      const block = document.createElement("div");
-      block.className = "meal-block";
-      block.innerHTML = '<div class="meal-title">' + g.title + '</div>';
-      for (const meal of g.meals) {
-        for (const item of meal.ingredients) {
-          const m = item.trim().match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:([a-zA-Zgml]+|个|只|片|棵|块|根|朵|勺|瓣))?$/);
-          const label = m ? (m[1].trim() + " " + (m[3] || "") + m[2]) : item;
-          const row = document.createElement("label");
-          row.className = "ingredient" + (checked[item] ? " checked" : "");
-          const cb = document.createElement("input");
-          cb.type = "checkbox";
-          cb.checked = !!checked[item];
-          cb.addEventListener("change", function() {
-            checked[item] = cb.checked;
-            row.classList.toggle("checked", cb.checked);
-            localStorage.setItem(STORE_KEY, JSON.stringify(checked));
-            updateBought();
-          });
-          row.appendChild(cb);
-          const span = document.createElement("span");
-          span.className = "name";
-          span.textContent = label;
-          row.appendChild(span);
-          block.appendChild(row);
-        }
-      }
-      content.appendChild(block);
+      const line = document.createElement("div");
+      line.className = "menu-line";
+      line.textContent = g.title;
+      menuBlock.appendChild(line);
     }
+    content.appendChild(menuBlock);
+
+    // 使用上面的汇总结果生成一份真正的合计清单，避免同种食材重复购买。
+    const shoppingItems = Object.entries(merged).map(([key, value]) => ({
+      key,
+      label: value.name + " " + (Number.isInteger(value.qty) ? value.qty : value.qty.toFixed(1)) + value.unit,
+    }));
+    for (const item of [...new Set(special)]) {
+      shoppingItems.push({ key: "special|" + item, label: item });
+    }
+
+    const prepBlock = document.createElement("div");
+    prepBlock.className = "meal-block";
+    const prepTitle = document.createElement("div");
+    prepTitle.className = "meal-title";
+    prepTitle.textContent = "🛒 合计备料";
+    prepBlock.appendChild(prepTitle);
+    for (const item of shoppingItems) {
+      const row = document.createElement("label");
+      row.className = "ingredient" + (checked[item.key] ? " checked" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!checked[item.key];
+      cb.addEventListener("change", function() {
+        checked[item.key] = cb.checked;
+        row.classList.toggle("checked", cb.checked);
+        localStorage.setItem(STORE_KEY, JSON.stringify(checked));
+        updateBought();
+      });
+      row.appendChild(cb);
+      const span = document.createElement("span");
+      span.className = "name";
+      span.textContent = item.label;
+      row.appendChild(span);
+      prepBlock.appendChild(row);
+    }
+    content.appendChild(prepBlock);
 
     function updateBought() {
       const boxes = content.querySelectorAll('input[type="checkbox"]');

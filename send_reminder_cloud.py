@@ -11,6 +11,7 @@ import json
 import os
 import re
 import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 MENU_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "menu.json")
@@ -28,6 +29,8 @@ def load_json(path):
 def pick_balanced(meals, start_date, tomorrow, used_proteins):
     """取菜单里满足营养搭配的菜：蛋白源不重复。"""
     n = len(meals)
+    if n == 0:
+        return None, "菜单列表为空"
     delta = (tomorrow - start_date).days
     if delta < 0:
         return None, "菜单还没到开餐日"
@@ -149,7 +152,7 @@ def main():
 
     proteins = [p.get("protein", "") for p in (porridge, pancake, lunch_meal)]
     if all(proteins):
-        message += "\n\n🥩 搭配自检：早/午/晚蛋白源 %s，当天三顿不重复" % "、".join(proteins)
+        message += "\n\n🥩 搭配自检：粥/小饼/下午蛋白源 %s，三项不重复" % "、".join(proteins)
     else:
         message += "\n\n🥩 搭配自检：今天蛋白源已覆盖（部分菜品无突出蛋白源）"
 
@@ -175,10 +178,9 @@ def main():
         except Exception as e:
             print("[失败] 第 %d 个接收者: %s" % (idx, e))
     print("[完成] %s 月 %s 日辅食提醒，成功 %d/%d" % (tomorrow.month, tomorrow.day, ok, len(sendkeys)))
-    return 0 if ok > 0 else 1
+    return 0 if ok == len(sendkeys) else 1
 
 
 if __name__ == "__main__":
     import sys
-    import urllib.request
     sys.exit(main())

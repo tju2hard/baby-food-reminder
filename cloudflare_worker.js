@@ -4,7 +4,8 @@
 // 依赖：
 //   - 仓库 menu.json 为公开（从 raw.githubusercontent 读取）
 //   - Secret WEIXIN_SENDKEYS = 逗号分隔的 Server酱 SendKey
-// 部署后：GET /run 可手动触发一次（用于测试）。
+// 部署后：带 Authorization: Bearer <TRIGGER_TOKEN> 请求 GET /run 可手动测试。
+// Secret TRIGGER_TOKEN 用于防止公开端点被他人触发。
 // ============================================================
 
 const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -17,11 +18,6 @@ const SERVINGS = 2;
 const BABIES = ["加加", "玥玥"];
 
 // ---- 工具 ----
-function beijingNow() {
-  // 北京 = UTC+8，用 Date.UTC 计算避免本地时区影响
-  return new Date(Date.now() + 8 * 3600000);
-}
-
 function fmtDate(d) {
   // d 为"北京时刻"的 Date；取 UTC 分量（因已 +8h）
   const y = d.getUTCFullYear();
@@ -32,6 +28,7 @@ function fmtDate(d) {
 }
 
 function pickBalanced(meals, delta, used) {
+  if (!Array.isArray(meals) || meals.length === 0) return null;
   const n = meals.length;
   for (let i = 0; i < n; i++) {
     const meal = meals[(delta + i) % n];
@@ -100,7 +97,7 @@ function buildMessage(porridge, pancake, lunch, tomorrow) {
   lines.push("");
   const proteins = [porridge, pancake, lunch].map(m => m.protein || "");
   if (proteins.every(Boolean)) {
-    lines.push("🥩 搭配自检：早/午/晚蛋白源 " + proteins.join("、") + "，当天三顿不重复");
+    lines.push("🥩 搭配自检：粥/小饼/下午蛋白源 " + proteins.join("、") + "，三项不重复");
   } else {
     lines.push("🥩 搭配自检：今天蛋白源已覆盖（部分菜品无突出蛋白源）");
   }
@@ -128,17 +125,25 @@ async function sendServerChan(sendkey, title, desp) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
   const json = await resp.json();
   if (json.code !== 0) throw new Error("发送失败: " + JSON.stringify(json));
 }
 
 async function run(env) {
   const menu = await fetchMenu();
-  const start = new Date(menu.start_date + "T00:00:00+08:00");
+  const startParts = String(menu.start_date || "").split("-").map(Number);
+  if (startParts.length !== 3 || startParts.some(n => !Number.isInteger(n))) {
+    throw new Error("菜单 start_date 格式错误");
+  }
+  const start = new Date(Date.UTC(startParts[0], startParts[1] - 1, startParts[2]));
+  if (start.getUTCFullYear() !== startParts[0] || start.getUTCMonth() !== startParts[1] - 1 || start.getUTCDate() !== startParts[2]) {
+    throw new Error("菜单 start_date 不是有效日期");
+  }
   const beijingToday = new Date(Date.now() + 8 * 3600000);
   beijingToday.setUTCHours(0, 0, 0, 0);
   const tomorrow = new Date(beijingToday.getTime() + 24 * 3600000);
-  const delta = Math.round((tomorrow - start) / 86400000);
+  const delta = Math.floor((tomorrow - start) / 86400000);
   if (delta < 0) return { ok: false, msg: "菜单还没到开餐日" };
 
   const used = new Set();
@@ -160,23 +165,34 @@ async function run(env) {
     try { await sendServerChan(key, title, message); okCount++; }
     catch (e) { console.log("发送失败:", key.slice(0, 8), e.message); }
   }
-  return { ok: okCount > 0, msg: `成功 ${okCount}/${keys.length}`, okCount };
+  return { ok: okCount === keys.length, msg: `成功 ${okCount}/${keys.length}`, okCount };
 }
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(run(env).then(r => console.log("[cron]", JSON.stringify(r))));
+    ctx.waitUntil(run(env).then(r => {
+      console.log("[cron]", JSON.stringify(r));
+      if (!r.ok) throw new Error(r.msg);
+    }));
   },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/run") {
+      const expected = env.TRIGGER_TOKEN || "";
+      const supplied = request.headers.get("Authorization") || "";
+      if (!expected) {
+        return new Response(JSON.stringify({ ok: false, msg: "未配置 TRIGGER_TOKEN，手动触发已禁用" }), { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      if (supplied !== "Bearer " + expected) {
+        return new Response(JSON.stringify({ ok: false, msg: "未授权" }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
       try {
         const r = await run(env);
-        return new Response(JSON.stringify(r), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify(r), { status: r.ok ? 200 : 500, headers: { "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ ok: false, msg: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
     }
-    return new Response("宝宝辅食提醒 Worker 运行中。GET /run 手动触发。", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return new Response("宝宝辅食提醒 Worker 运行中。带 Bearer Token 请求 GET /run 可手动触发。", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   },
 };

@@ -29,6 +29,8 @@ def load_json(path):
 
 def pick_meal(meals, start_date, tomorrow):
     """按日期轮换取菜：发完一轮从头开始。"""
+    if not meals:
+        return None, "菜单列表为空"
     delta = (tomorrow - start_date).days
     if delta < 0:
         return None, f"菜单从 {start_date} 开始，还没到开餐日"
@@ -39,6 +41,8 @@ def pick_meal(meals, start_date, tomorrow):
 def pick_balanced(meals, start_date, tomorrow, used_proteins):
     """取菜单里满足营养搭配的菜：蛋白源不重复（空蛋白视为无冲突）。"""
     n = len(meals)
+    if n == 0:
+        return None, "菜单列表为空"
     delta = (tomorrow - start_date).days
     if delta < 0:
         return None, "菜单还没到开餐日"
@@ -52,18 +56,27 @@ def pick_balanced(meals, start_date, tomorrow, used_proteins):
     return meals[delta % n], None
 
 
-def mark_sent(day):
-    """记录某天已发送。返回 True 表示本次标记成功（当天首次），False 表示当天已发过。"""
-    state = {}
-    if os.path.exists(STATE_PATH):
+def was_sent(day):
+    """返回指定日期是否已经成功发送；损坏的状态文件按未发送处理。"""
+    if not os.path.exists(STATE_PATH):
+        return False
+    try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             state = json.load(f)
-    if state.get("last_sent") == day:
+    except (OSError, json.JSONDecodeError) as exc:
+        print("[警告] 无法读取发送状态，将继续尝试发送: %s" % exc)
         return False
-    state["last_sent"] = day
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
+    return state.get("last_sent") == day
+
+
+def mark_sent(day):
+    """仅在实际发送成功后，原子地记录已发送日期。"""
+    state = {"last_sent": day}
+    temp_path = STATE_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
-    return True
+        f.write("\n")
+    os.replace(temp_path, STATE_PATH)
 
 
 def _parse_ingredient(item):
@@ -174,13 +187,39 @@ def send_wecom(webhook_url, message):
 
 def split_for_wecom(message, max_bytes=2000):
     """按空行分段，合并进多个消息块，每块不超过 max_bytes 字节。"""
+    if max_bytes <= 0:
+        raise ValueError("max_bytes 必须大于 0")
+
+    def split_oversized(text):
+        """按 UTF-8 字节安全拆分单个超长段落，不截断多字节字符。"""
+        chunks, current, current_len = [], [], 0
+        for char in text:
+            char_len = len(char.encode("utf-8"))
+            if current and current_len + char_len > max_bytes:
+                chunks.append("".join(current))
+                current, current_len = [], 0
+            current.append(char)
+            current_len += char_len
+        if current:
+            chunks.append("".join(current))
+        return chunks
+
     blocks = [b for b in message.split("\n\n") if b.strip()]
     parts, current, current_len = [], [], 0
     for block in blocks:
-        block_bytes = len(block.encode("utf-8")) + 2  # +2 用于段间换行
+        raw_block_len = len(block.encode("utf-8"))
+        if raw_block_len > max_bytes:
+            if current:
+                parts.append("\n\n".join(current))
+                current, current_len = [], 0
+            parts.extend(split_oversized(block))
+            continue
+
+        block_bytes = raw_block_len + (2 if current else 0)
         if current and current_len + block_bytes > max_bytes:
             parts.append("\n\n".join(current))
             current, current_len = [], 0
+            block_bytes = raw_block_len
         current.append(block)
         current_len += block_bytes
     if current:
@@ -213,7 +252,7 @@ def main():
     # 搭配自检说明：三顿蛋白源
     proteins = [p.get("protein", "") for p in (porridge, pancake, lunch_meal)]
     if all(proteins):
-        message += "\n\n🥩 搭配自检：早/午/晚蛋白源 %s，当天三顿不重复" % "、".join(proteins)
+        message += "\n\n🥩 搭配自检：粥/小饼/下午蛋白源 %s，三项不重复" % "、".join(proteins)
     else:
         message += "\n\n🥩 搭配自检：今天蛋白源已覆盖（部分菜品无突出蛋白源）"
 
@@ -228,22 +267,26 @@ def main():
         print(message)
         return 0
 
-    # 当天去重：防止多次触发（兜底自检）重复发送
+    webhook_url = (config.get("webhook_url") or "").strip()
+    sendkeys = [s.strip() for s in (config.get("sendkeys") or []) if s.strip()]
+    if not webhook_url and not sendkeys:
+        print("[跳过] 未配置 webhook_url 或 sendkeys，请先在 config.json 填写")
+        return 0
+
+    # 只有具备发送通道时才检查状态；状态只在实际发送成功后写入。
     day_str = tomorrow.strftime("%Y-%m-%d")
-    if not mark_sent(day_str):
+    if was_sent(day_str):
         print("[跳过] %s 的提醒今天已发送过，避免重复" % day_str)
         return 0
 
-    webhook_url = (config.get("webhook_url") or "").strip()
     if webhook_url:
-        send_wecom(webhook_url, message)
+        try:
+            send_wecom(webhook_url, message)
+        except Exception as exc:
+            print("[失败] 企业微信发送失败: %s" % exc)
+            return 1
+        mark_sent(day_str)
         print("[成功] 已发送到企业微信群 %s 月 %s 日的辅食提醒" % (tomorrow.month, tomorrow.day))
-        return 0
-
-    sendkeys = config.get("sendkeys") or []
-    sendkeys = [s.strip() for s in sendkeys if s.strip()]
-    if not sendkeys:
-        print("[跳过] 未配置 webhook_url 或 sendkeys，请先在 config.json 填写")
         return 0
 
     title = "明日辅食提醒 · %s" % message.splitlines()[0].replace("🍚 明日辅食提醒（", "").rstrip("）")
@@ -256,7 +299,10 @@ def main():
         except Exception as e:
             print("[失败] 第 %d 个接收者 (%s): %s" % (idx, sendkey[:8] + "...", e))
     print("[完成] %s 月 %s 日辅食提醒，成功 %d/%d 位接收者" % (tomorrow.month, tomorrow.day, ok, len(sendkeys)))
-    return 0
+    if ok == len(sendkeys):
+        mark_sent(day_str)
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
