@@ -75,8 +75,10 @@ async function fetchGroupNews(city, group) {
   const googleUrl = `https://news.google.com/rss/search?q=${query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
   const bingUrl = `https://www.bing.com/news/search?q=${query}&format=rss`;
 
-  let items = parseRss(await fetchText(googleUrl) || "");
-  if (!items.length) items = parseRss(await fetchText(bingUrl) || "");
+  let xml = await fetchText(googleUrl);
+  if (!xml) xml = await fetchText(bingUrl);
+  if (!xml) return { items: [], sourceOk: false };
+  const items = parseRss(xml);
 
   const cutoff = Date.now() - LOOKBACK_HOURS * 3600000;
   const fresh = items
@@ -92,7 +94,7 @@ async function fetchGroupNews(city, group) {
     seen.add(t);
     deduped.push(it);
   }
-  return deduped;
+  return { items: deduped, sourceOk: true };
 }
 
 async function seenKey(link) {
@@ -161,14 +163,17 @@ async function run(env) {
 
   // 逐组检索
   const all = [];
+  let availableGroups = 0;
   for (const g of DISEASE_GROUPS) {
     try {
-      const hits = await fetchGroupNews(CITY, g);
-      all.push(...hits);
+      const result = await fetchGroupNews(CITY, g);
+      if (result.sourceOk) availableGroups++;
+      all.push(...result.items);
     } catch (e) { /* 单组失败跳过 */ }
   }
 
-  if (!all.length) return { ok: true, msg: `近${LOOKBACK_HOURS}h 无北京疫情相关新闻，未推送`, sent: false };
+  if (!availableGroups) return { ok: false, msg: "所有新闻源均不可用", sent: false, availableGroups };
+  if (!all.length) return { ok: true, msg: `近${LOOKBACK_HOURS}h 无北京疫情相关新闻，未推送`, sent: false, availableGroups };
 
   // 汇总排序，取前 N
   all.sort((a, b) => b.pubDate - a.pubDate);
@@ -180,7 +185,7 @@ async function run(env) {
     unique.push(item);
   }
   const unseen = await filterUnseen(unique, env.NEWS_STATE);
-  if (!unseen.length) return { ok: true, msg: "没有新发现的北京疫情相关新闻，未推送", sent: false };
+  if (!unseen.length) return { ok: true, msg: "没有新发现的北京疫情相关新闻，未推送", sent: false, availableGroups };
   const topEntries = unseen.slice(0, MAX_HITS);
   const top = topEntries.map(entry => entry.item);
 
@@ -207,7 +212,7 @@ async function run(env) {
   }
   const ok = okCount === keys.length;
   if (ok) await markSeen(topEntries, env.NEWS_STATE);
-  return { ok, msg: `推送 ${okCount}/${keys.length}`, sent: okCount > 0, hits: top.length };
+  return { ok, msg: `推送 ${okCount}/${keys.length}`, sent: okCount > 0, hits: top.length, availableGroups };
 }
 
 export default {
@@ -216,6 +221,13 @@ export default {
       const simulationPending = env.NEWS_STATE && await env.NEWS_STATE.get("simulation:pending");
       const r = simulationPending ? await runSimulation(env) : await run(env);
       console.log(simulationPending ? "[simulation]" : "[cron-epidemic]", JSON.stringify(r));
+      if (env.NEWS_STATE) {
+        await env.NEWS_STATE.put("status:last_run", JSON.stringify({
+          ...r,
+          type: simulationPending ? "simulation" : "scan",
+          at: new Date().toISOString(),
+        }), { expirationTtl: 7 * 24 * 3600 });
+      }
       if (!r.ok) throw new Error(r.msg);
       if (simulationPending) await env.NEWS_STATE.delete("simulation:pending");
     })());

@@ -101,6 +101,7 @@ await epidemic.scheduled({}, {
 await scheduledPromise;
 assert.equal(sendCount, beforeSimulationSend + 1);
 assert.equal(stateValues.has("simulation:pending"), false);
+assert.equal(JSON.parse(stateValues.get("status:last_run")).type, "simulation");
 assert.match(new URLSearchParams(sentBody).get("title"), /模拟/);
 assert.match(new URLSearchParams(sentBody).get("desp"), /并非真实疫情/);
 
@@ -116,7 +117,7 @@ const epidemicFirst = await epidemic.fetch(new Request("https://example.test/run
 assert.equal(epidemicFirst.status, 200);
 assert.equal((await epidemicFirst.json()).sent, true);
 assert.equal(sendCount, beforeNewsSend + 1);
-assert.equal(stateValues.size, 1);
+assert.equal([...stateValues.keys()].filter(key => key.startsWith("news:")).length, 1);
 
 const epidemicSecond = await epidemic.fetch(new Request("https://example.test/run_epidemic", {
   headers: { Authorization: "Bearer secret" },
